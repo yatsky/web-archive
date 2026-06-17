@@ -59,6 +59,21 @@ function generateChatCompletion(tagLanguage: string, preferredTags: string[]): s
   `
 }
 
+// Different OpenAI-compatible providers return the JSON payload in slightly
+// different shapes: some honour the prompt and emit raw JSON, others wrap it in
+// a ```json ... ``` markdown fence or prepend a sentence of prose. Extract the
+// first balanced JSON object so any reasonable model works.
+function extractJsonObject(content: string): string {
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const text = (fenced ? fenced[1] : content).trim()
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start !== -1 && end !== -1 && end > start) {
+    return text.slice(start, end + 1)
+  }
+  return text
+}
+
 export async function generateTagByOpenAI(props: GenerateTagProps): Promise<Array<string>> {
   if (props.type !== 'openai') {
     throw new Error('Invalid AI tag config')
@@ -76,14 +91,27 @@ export async function generateTagByOpenAI(props: GenerateTagProps): Promise<Arra
   })
 
   if (!res.ok) {
-    const content = await res.json()
-    throw new Error(content.error.message)
+    // Error envelopes vary across providers ({error:{message}}, {error:"..."},
+    // {message:"..."} or plain text); fall back gracefully instead of throwing
+    // on an unexpected shape.
+    let message = `Request failed with status ${res.status}`
+    try {
+      const content = await res.json() as { error?: { message?: string } | string, message?: string }
+      const errMessage = typeof content.error === 'string' ? content.error : content.error?.message
+      message = errMessage ?? content.message ?? message
+    }
+    catch {
+      const text = await res.text().catch(() => '')
+      if (text)
+        message = text
+    }
+    throw new Error(message)
   }
 
   try {
     const data = await res.json() as GenerateTagResponse
     const content = data.choices[0].message.content
-    const tagJson = JSON.parse(content)
+    const tagJson = JSON.parse(extractJsonObject(content))
     return tagJson.tags.slice(0, 5)
   }
   catch (error) {

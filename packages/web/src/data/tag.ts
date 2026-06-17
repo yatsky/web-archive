@@ -21,7 +21,7 @@ function updateTag(body: { id: number, name: string }): Promise<void> {
   })
 }
 
-function generateTag(body: { title: string, pageDesc: string, model: string, preferredTags: string[], tagLanguage: string }): Promise<string[]> {
+function generateTag(body: { title: string, pageDesc: string, model: string, preferredTags: string[], tagLanguage: string, type?: 'cloudflare' | 'openai', apiUrl?: string, apiKey?: string }): Promise<string[]> {
   return fetcher<string[]>('/tags/generate_tag', {
     method: 'POST',
     body,

@@ -3,7 +3,6 @@ import type { AutoCompleteTagInputRef } from '@web-archive/shared/components/aut
 import AutoCompleteTagInput from '@web-archive/shared/components/auto-complete-tag-input'
 import { Button } from '@web-archive/shared/components/button'
 import type { GenerateTagProps } from '@web-archive/shared/utils'
-import { generateTagByOpenAI } from '@web-archive/shared/utils'
 import { useRequest } from 'ahooks'
 import { AlertCircleIcon, Loader2Icon, SparklesIcon } from 'lucide-react'
 import { sendMessage } from 'webext-bridge/popup'
@@ -26,11 +25,10 @@ async function doGenerateTag(props: GenerateTagProps, errorMessage: string) {
     toast.error(errorMessage)
     throw new Error('Invalid AI tag config')
   }
-  if (props.type === 'cloudflare') {
-    const { tags } = await sendMessage('generate-tag', props)
-    return tags
-  }
-  return await generateTagByOpenAI(props)
+  // Both Cloudflare and OpenAI-compatible tagging now run server-side, so the
+  // extension always goes through the server and never needs the API key.
+  const { tags } = await sendMessage('generate-tag', props)
+  return tags
 }
 
 interface TagInputWithCacheProps {

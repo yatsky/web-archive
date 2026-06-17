@@ -1,9 +1,11 @@
-import { buildGenerateTagMessage, isNil, isNumberString } from '@web-archive/shared/utils'
+import { buildGenerateTagMessage, generateTagByOpenAI, isNil, isNumberString } from '@web-archive/shared/utils'
+import type { AITagConfig } from '@web-archive/shared/types'
 import { Hono } from 'hono'
 import { validator } from 'hono/validator'
 import { z } from 'zod'
 import type { HonoTypeUserInformation } from '~/constants/binding'
 import { deleteTagById, insertTag, selectAllTags, updateTag } from '~/model/tag'
+import { getAITagConfig } from '~/model/store'
 import result from '~/utils/result'
 
 const app = new Hono<HonoTypeUserInformation>()
@@ -91,9 +93,17 @@ app.post(
     const schema = z.object({
       title: z.string({ message: 'Title is required' }).min(1, { message: 'Title is required' }),
       pageDesc: z.string().default(''),
-      model: z.string({ message: 'Model name is required' }).min(1, { message: 'Model name is required' }),
-      tagLanguage: z.enum(['en', 'zh'], { message: 'Invalid tag language' }),
-      preferredTags: z.array(z.string()).default([]),
+      // Optional inline config override. The settings "test connection" button
+      // sends the unsaved form values here (including `type`). When `type` is
+      // omitted we fall back to the saved config in the database — that is the
+      // path the browser extension and auto-tagging take, so credentials for
+      // OpenAI-compatible endpoints never have to leave the server.
+      type: z.enum(['cloudflare', 'openai']).optional(),
+      model: z.string().optional(),
+      tagLanguage: z.enum(['en', 'zh']).optional(),
+      preferredTags: z.array(z.string()).optional(),
+      apiUrl: z.string().optional(),
+      apiKey: z.string().optional(),
     })
     const parsed = schema.safeParse(value)
     if (!parsed.success) {
@@ -105,12 +115,58 @@ app.post(
     return parsed.data
   }),
   async (c) => {
-    const { title, pageDesc, model, tagLanguage, preferredTags } = c.req.valid('json')
+    const body = c.req.valid('json')
+    const { title, pageDesc } = body
+
+    // Resolve the effective AI config: inline override (test connection) wins,
+    // otherwise read the saved config from the database.
+    let config: AITagConfig
+    if (body.type) {
+      config = { ...body, type: body.type } as AITagConfig
+    }
+    else {
+      try {
+        config = await getAITagConfig(c.env.DB)
+      }
+      catch (error) {
+        return c.json(result.error(500, 'Failed to load AI tag config'))
+      }
+    }
+
+    const tagLanguage = config.tagLanguage ?? 'en'
+    const preferredTags = config.preferredTags ?? []
+
+    if (!config.model) {
+      return c.json(result.error(400, 'Model name is required'))
+    }
 
     try {
+      // OpenAI-compatible endpoint: call it server-side so it works behind the
+      // gateway (no browser CORS) and the API key stays on the server.
+      if (config.type === 'openai') {
+        if (!config.apiUrl || !config.apiKey) {
+          return c.json(result.error(400, 'API URL and API Key are required'))
+        }
+        const tags = await generateTagByOpenAI({
+          title,
+          pageDesc,
+          type: 'openai',
+          model: config.model,
+          tagLanguage,
+          preferredTags,
+          apiUrl: config.apiUrl,
+          apiKey: config.apiKey,
+        })
+        return c.json(result.success(tags))
+      }
+
+      // Cloudflare Workers AI binding (only available on Cloudflare deployments).
+      if (!c.env.AI) {
+        return c.json(result.error(400, 'Cloudflare AI binding is not available in this deployment. Switch the AI service type to OpenAI.'))
+      }
       const res = await c.env.AI.run(
         // @ts-expect-error use BaseAiTextGenerationModels to check model? or use type assertion?
-        model,
+        config.model,
         {
           messages: buildGenerateTagMessage({ title, pageDesc, tagLanguage, preferredTags }),
         },
